@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         豆包批量删除对话记录
 // @namespace    https://www.doubao.com/
-// @version      3.0-dev
-// @description  [开发版] 豆包网页版对话批量删除+批量导出，API直调删除
+// @version      3.1-dev
+// @description  [开发版] 豆包网页版对话批量删除+批量导出，API直调删除（适配新版对话栏 DOM）
 // @author       You
 // @match        https://www.doubao.com/*
 // @match        https://doubao.com/*
@@ -104,6 +104,24 @@
     }
 
     // ==================== 扫描对话 ====================
+    // 提取对话标题：新版标题 span 带 style="visibility: visible"，
+    // 旁边还有 aria-hidden 的测量 span（文本重复），不能用 span[class*="whitespace-nowrap"] 直接取
+    function getConvTitle(el) {
+        var vis = el.querySelector('span[style*="visibility: visible"][class*="whitespace-nowrap"]')
+            || el.querySelector('span.block.whitespace-nowrap:not([aria-hidden])');
+        if (vis) return vis.textContent.trim();
+        var any = el.querySelector('span[class*="whitespace-nowrap"]');
+        return any ? any.textContent.trim() : '(无标题)';
+    }
+
+    // 取 section 标题：新版在 section-header 的 div[role="button"] > span 里
+    function getSectionHeaderText(sec) {
+        var wrap = sec.querySelector('[role="button"]');
+        var span = wrap ? wrap.querySelector('span') : null;
+        if (span && span.textContent.trim()) return span.textContent.trim();
+        return '';
+    }
+
     async function doScan() {
         log('正在扫描...');
         await scrollLoad();
@@ -115,50 +133,46 @@
 
         for (var i = 0; i < sections.length; i++) {
             var sec = sections[i];
+            var convLinks = sec.querySelectorAll('a[id^="conversation_"]');
+            if (convLinks.length === 0) continue;
 
             // 判断是否是项目文件夹（有 data-project-id）
             var projectId = sec.getAttribute('data-project-id');
+            var headerText = getSectionHeaderText(sec);
+            var isRecent = !projectId && (headerText === '最近' || headerText === '');
+
+            var groupName = '最近';
             if (projectId) {
-                // 获取文件夹名称
                 var titleEl = sec.querySelector('[title]');
-                var folderName = titleEl ? titleEl.getAttribute('title') : '未命名项目';
-
-                // 获取该文件夹下的对话
-                var convLinks = sec.querySelectorAll('a[id^="conversation_"]');
-                var items = [];
-                for (var j = 0; j < convLinks.length; j++) {
-                    var el = convLinks[j];
-                    var convTitle = el.querySelector('span[class*="whitespace-nowrap"]');
-                    var t = convTitle ? convTitle.textContent.trim() : '(无标题)';
-                    items.push({ id: el.id, title: t, element: el, href: el.getAttribute('href') || '' });
-                }
-
-                scanResult.push({ type: 'folder', name: folderName, items: items, collapsed: true });
-                continue;
+                groupName = titleEl ? titleEl.getAttribute('title') : (headerText || '未命名项目');
+            } else if (headerText) {
+                groupName = headerText;
             }
 
-            // 判断是否是"最近"section（header 包含"最近"文字）
-            var headerBtn = sec.querySelector('button');
-            if (headerBtn && headerBtn.textContent.trim() === '最近') {
-                var convLinks2 = sec.querySelectorAll('a[id^="conversation_"]');
-                var recentItems = [];
-                for (var k = 0; k < convLinks2.length; k++) {
-                    var el2 = convLinks2[k];
-                    var convTitle2 = el2.querySelector('span[class*="whitespace-nowrap"]');
-                    var t2 = convTitle2 ? convTitle2.textContent.trim() : '(无标题)';
+            var items = [];
+            for (var j = 0; j < convLinks.length; j++) {
+                var el = convLinks[j];
+                var t = getConvTitle(el);
 
+                // 只对"最近"分组过滤保留项
+                if (isRecent) {
                     var isSkip = false;
                     for (var s = 0; s < SKIP.length; s++) {
-                        if (t2 === SKIP[s]) { isSkip = true; break; }
+                        if (t === SKIP[s]) { isSkip = true; break; }
                     }
                     if (isSkip) continue;
-
-                    recentItems.push({ id: el2.id, title: t2, element: el2, href: el2.getAttribute('href') || '' });
                 }
 
-                if (recentItems.length > 0) {
-                    scanResult.push({ type: 'recent', name: '最近', items: recentItems, collapsed: false });
-                }
+                items.push({ id: el.id, title: t, element: el, href: el.getAttribute('href') || '' });
+            }
+
+            if (items.length > 0) {
+                scanResult.push({
+                    type: isRecent ? 'recent' : 'folder',
+                    name: groupName,
+                    items: items,
+                    collapsed: !isRecent
+                });
             }
         }
 
